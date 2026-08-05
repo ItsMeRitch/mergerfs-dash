@@ -1,0 +1,29 @@
+# Copy this file to your server as docker-compose.yml, edit YOUR_USERNAME
+# and the branch paths, then:  docker compose up -d
+#
+# This file stays on the server and is NOT pushed to GitHub — which is how
+# the repo can be public while your drive layout stays private.
+
+services:
+  mergerfs-dash:
+    image: ghcr.io/YOUR_USERNAME/mergerfs-dash:latest
+    container_name: mergerfs-dash
+    ports:
+      - "8282:8282"
+    environment:
+      # Comma-separated list of the paths INSIDE the container.
+      BRANCHES: /branches/disk1,/branches/disk2,/branches/disk3
+      # PORT: "8282"
+    volumes:
+      # Map each real mergerfs branch into the container, read-only.
+      - /mnt/disk1:/branches/disk1:ro
+      - /mnt/disk2:/branches/disk2:ro
+      - /mnt/disk3:/branches/disk3:ro
+      # Persistent scan cache so rescans don't happen on container restarts.
+      - mergerfs-dash-data:/data
+    restart: unless-stopped
+    # If files on your branches are not readable by UID 1000, uncomment:
+    # user: "0:0"
+
+volumes:
+  mergerfs-dash-data:

@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+mergerfs_dash_cache.json
+mergerfs_dash_cache.json.tmp
+.DS_Store
