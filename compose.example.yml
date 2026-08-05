@@ -6,7 +6,7 @@
 
 services:
   mergerfs-dash:
-    image: ghcr.io/YOUR_USERNAME/mergerfs-dash:latest
+    image: ghcr.io/itsmeritch/mergerfs-dash:latest
     container_name: mergerfs-dash
     ports:
       - "8282:8282"

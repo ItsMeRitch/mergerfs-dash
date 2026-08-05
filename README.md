@@ -15,12 +15,12 @@ completely read-only.
 
 ## Run with Docker (recommended)
 
-This repo auto-builds a multi-arch image (`linux/amd64` + `linux/arm64`) to
-`ghcr.io` on every version tag. On your server:
+A prebuilt multi-arch image (`linux/amd64` + `linux/arm64`) is available at
+`ghcr.io/itsmeritch/mergerfs-dash`. On your server:
 
 ```bash
 # copy compose.example.yml to your server as docker-compose.yml,
-# edit YOUR_USERNAME and your branch paths, then:
+# edit the branch paths to match your pool, then:
 docker compose pull
 docker compose up -d
 # dashboard: http://your-server:8282
@@ -45,18 +45,3 @@ A systemd unit example is in the header comment of `mergerfs_dash.py`.
 | Port       | `--port`      | `PORT`       | `8282`                                 |
 | Listen addr| `--host`      | `HOST`       | `0.0.0.0`                              |
 | Scan cache | `--cache`     | `CACHE_PATH` | next to the script / `/data/…` in Docker |
-
-## Making a new release (the versioning loop)
-
-1. Commit and push your changes.
-2. On GitHub: **Releases → Draft a new release → create tag `v1.0.1` → Publish**.
-3. The Actions workflow builds and pushes
-   `ghcr.io/<you>/mergerfs-dash:1.0.1` and `:latest` automatically.
-4. On the server: `docker compose pull && docker compose up -d`.
-
-### One-time step after the very first release
-
-ghcr packages start out **private** even for public repos. Fix it once:
-GitHub → your profile → **Packages → mergerfs-dash → Package settings →
-Change visibility → Public**. Until you do, `docker compose pull` on the
-server will fail with a 401.
