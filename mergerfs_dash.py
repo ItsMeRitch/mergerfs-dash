@@ -23,9 +23,11 @@ On the host (auto-detects branches from the mergerfs mount):
 
     python3 mergerfs_dash.py --mount /storage
 
-Explicit branches (also how the Docker container is configured):
+Explicit branches, comma-separated or as a glob like in a mergerfs fstab
+(quote it so your shell doesn't expand it; this is also how Docker works):
 
     python3 mergerfs_dash.py --branches /mnt/disk1,/mnt/disk2,/mnt/disk3
+    python3 mergerfs_dash.py --branches '/mnt/disk*'
 
 Config can also come from environment variables (this is how Docker works):
 
@@ -63,7 +65,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 DEFAULT_PORT = 8282
 TOP_N_SHARES = 12        # rows in the "share distribution" chart
 TOP_N_LARGEST = 10       # rows in the "largest files" list
@@ -790,7 +792,8 @@ def parse_args(argv):
     p.add_argument("--mount", default=os.environ.get("MOUNT"),
                    help="mergerfs mount point (branches auto-detected via xattr)")
     p.add_argument("--branches", default=os.environ.get("BRANCHES"),
-                   help="comma-separated branch paths (takes priority over --mount)")
+                   help="comma-separated branch paths or glob patterns like "
+                        "'/mnt/disk*' (takes priority over --mount)")
     p.add_argument("--port", type=int,
                    default=int(os.environ.get("PORT", DEFAULT_PORT)),
                    help=f"listen port (default {DEFAULT_PORT})")
@@ -812,7 +815,21 @@ def main(argv=None):
 
     version = None
     if args.branches:
-        branches = [b.strip() for b in args.branches.split(",") if b.strip()]
+        # Entries may be shell-style globs (e.g. "/branches/disk*"), just
+        # like in a mergerfs fstab. Expand them here.
+        branches = []
+        for raw in args.branches.split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            if any(c in raw for c in "*?["):
+                matches = sorted(g for g in glob.glob(raw) if os.path.isdir(g))
+                if not matches:
+                    print(f"warning: pattern '{raw}' matched no directories; "
+                          f"skipping", file=sys.stderr)
+                branches.extend(matches)
+            else:
+                branches.append(raw)
     elif args.mount:
         try:
             branches, version = detect_from_xattr(args.mount)
