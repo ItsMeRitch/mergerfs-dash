@@ -1036,7 +1036,7 @@ def main(argv=None):
     if not create_policy and mergerfs_mount:
         try:
             create_policy = os.getxattr(
-                mergerfs_mount, "user.mergerfs.create").decode().strip() or None
+                mergerfs_mount, "user.mergerfs.category.create").decode().strip() or None
             policy_assumed = create_policy is None
         except OSError:
             create_policy = None
