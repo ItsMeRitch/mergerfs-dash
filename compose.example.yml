@@ -1,12 +1,12 @@
-# Copy this file to your server as docker-compose.yml, edit the paths,
-# then:  docker compose up -d
+# Copy this file to your server as docker-compose.yml, edit the one host
+# path, then:  docker compose up -d
 #
 # This file stays on the server and is NOT pushed to GitHub — which is how
 # the repo can be public while your drive layout stays private.
 #
-# NOTE: you do NOT need to pass the mergerfs pool mount itself into
-# the container. The app reads the underlying
-# branches directly — they are just normal directories.
+# You do NOT need to pass the mergerfs pool mount itself into the
+# container. The app reads the underlying branches directly — they are
+# just normal directories.
 
 services:
   mergerfs-dash:
@@ -14,25 +14,22 @@ services:
     container_name: mergerfs-dash
     ports:
       - "8282:8282"
-    environment:
-      # Simplest setup: if all branches live under one host prefix
-      # (e.g. /mnt/disk1, /mnt/disk2, ...), mount that prefix read-only
-      # and use a glob — exactly like in a mergerfs fstab:
-      BRANCHES: /branches/disk*
-      # ...or list branches explicitly:
-      # BRANCHES: /branches/disk1,/branches/disk2,/branches/disk3
-      # PORT: "8282"
     volumes:
-      # One read-only mapping of the parent dir exposes every branch:
+      # Map the parent dir that holds your disk mounts, read-only.
+      # Every mounted filesystem found inside becomes a branch,
+      # automatically — no BRANCHES variable needed.
       - /mnt:/branches:ro
-      # ...or map branches individually (read-only!):
-      # - /mnt/disk1:/branches/disk1:ro
-      # - /mnt/disk2:/branches/disk2:ro
       # Persistent scan cache so rescans don't happen on container restarts.
       - mergerfs-dash-data:/data
     restart: unless-stopped
-    # If files on your branches are not readable by UID 1000, uncomment:
-    # user: "0:0"
+    # --- optional overrides -------------------------------------------------
+    # environment:
+    #   BRANCHES: /branches/disk*         # glob, or comma-separated list,
+    #                                     # if you only want SOME mounts
+    #   PORT: "8282"
+    # user: "0:0"   # if the table's "Unreadable" column shows errors
+    #                 # (e.g. root-only dirs like lost+found); mounts stay
+    #                 # read-only either way
 
 volumes:
   mergerfs-dash-data:

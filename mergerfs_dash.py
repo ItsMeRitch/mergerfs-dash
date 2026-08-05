@@ -29,14 +29,24 @@ Explicit branches, comma-separated or as a glob like in a mergerfs fstab
     python3 mergerfs_dash.py --branches /mnt/disk1,/mnt/disk2,/mnt/disk3
     python3 mergerfs_dash.py --branches '/mnt/disk*'
 
+With NO configuration at all (typical in Docker): the app discovers branches
+itself — every filesystem mounted under DISCOVERY_ROOT is treated as a
+branch. Map your disk parent dir read-only and you're done:
+
+    docker run -d -p 8282:8282 -v /mnt:/branches:ro \
+        -v mergerfs-dash-data:/data ghcr.io/<you>/mergerfs-dash:latest
+
 Config can also come from environment variables (this is how Docker works):
 
-    MOUNT       mergerfs mount point used for auto-detection
-    BRANCHES    comma-separated list of branch paths (takes priority over MOUNT)
-    PORT        listen port              (default 8282)
-    HOST        listen address           (default 0.0.0.0)
-    CACHE_PATH  where to store scan JSON (default: alongside this script,
-                /data/mergerfs_dash_cache.json in the container)
+    MOUNT          mergerfs mount point used for auto-detection
+    BRANCHES       comma-separated list or glob of branch paths
+                   (takes priority over MOUNT and discovery)
+    DISCOVERY_ROOT where to look for mounted branches when nothing else is
+                   configured (default /branches)
+    PORT           listen port              (default 8282)
+    HOST           listen address           (default 0.0.0.0)
+    CACHE_PATH     where to store scan JSON (default: alongside this script,
+                   /data/mergerfs_dash_cache.json in the container)
 
 systemd unit for running on the host (Docker users don't need this):
 
@@ -65,7 +75,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 DEFAULT_PORT = 8282
 TOP_N_SHARES = 12        # rows in the "share distribution" chart
 TOP_N_LARGEST = 10       # rows in the "largest files" list
@@ -127,6 +137,48 @@ def detect_from_proc_mounts():
     return None, None
 
 
+def discover_mounted_branches(root, max_depth=4):
+    """Docker-friendly auto-discovery: every directory under `root` that is
+    its own filesystem (a mount point) is treated as a branch.
+
+    A mount is detected by st_dev differing from its parent directory.
+    Same-device directories are descended into, so nested layouts like
+    /branches/disks/disk1 work the same as flat ones. Mounts are not
+    descended into further. Note: only the mounts visible at process start
+    are seen (Docker mount propagation), so adding a disk later means
+    restarting the container.
+    """
+    found = []
+    try:
+        root_dev = os.stat(root).st_dev
+    except OSError:
+        return found
+    stack = [(root, root_dev, 0)]
+    while stack:
+        current, parent_dev, depth = stack.pop()
+        if depth >= max_depth:
+            continue
+        try:
+            entries = os.scandir(current)
+        except OSError:
+            continue
+        with entries:
+            for entry in entries:
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                    dev = os.stat(entry.path, follow_symlinks=False).st_dev
+                except OSError:
+                    continue
+                if dev != parent_dev:
+                    found.append(entry.path)          # a mounted filesystem
+                else:
+                    stack.append((entry.path, dev, depth + 1))  # plain dir
+    return sorted(found)
+
+
 def branch_display_names(paths):
     """Short, unique display names: basenames, unless they collide."""
     base = [os.path.basename(p.rstrip("/")) or p for p in paths]
@@ -152,10 +204,16 @@ class State:
     def load_cache(self):
         try:
             with open(self.cache_path) as fh:
-                self.scan_data = json.load(fh)
-            return True
+                data = json.load(fh)
         except (OSError, ValueError):
             return False
+        # If the branch config changed since that scan, the cached numbers
+        # belong to a different pool layout — discard and let a fresh scan
+        # run instead of showing stale data.
+        if data.get("branch_order") != list(self.branch_names):
+            return False
+        self.scan_data = data
+        return True
 
     def save_cache(self):
         tmp = self.cache_path + ".tmp"
@@ -456,7 +514,8 @@ ol.largest .fp{color:var(--dim); font-size:11px; word-break:break-all}
       <thead><tr>
         <th>Branch</th><th class="num">Total</th><th class="num">Used</th>
         <th class="num">Free</th><th class="num">Fill</th><th class="num">Files</th>
-        <th class="num">Dirs</th><th class="num">Inodes free</th>
+        <th class="num">Dirs</th><th class="num">Unreadable</th>
+        <th class="num">Inodes free</th>
       </tr></thead>
       <tbody></tbody>
     </table>
@@ -682,13 +741,15 @@ function renderBranchTable(s){
   s.pool.branches.forEach(b => {
     let cells;
     if(!b.ok){
-      cells = '<td colspan="7" class="bad">unreachable</td>';
+      cells = '<td colspan="8" class="bad">unreachable</td>';
     } else {
       const pct = b.used / b.total;
-      let files = "—", dirs = "—";
+      let files = "—", dirs = "—", unreadable = "—";
       if(scanD && scanD.branches[b.name]){
         files = fmtNum(scanD.branches[b.name].files);
         dirs  = fmtNum(scanD.branches[b.name].dirs);
+        const errs = scanD.branches[b.name].errors || 0;
+        unreadable = errs ? '<span style="color:var(--bad)">'+errs+'</span>' : "0";
       }
       cells = '<td class="num">'+fmtBytes(b.total)+'</td>'+
               '<td class="num">'+fmtBytes(b.used)+'</td>'+
@@ -697,6 +758,7 @@ function renderBranchTable(s){
                   (pct*100).toFixed(1)+'%</td>'+
               '<td class="num">'+files+'</td>'+
               '<td class="num">'+dirs+'</td>'+
+              '<td class="num">'+unreadable+'</td>'+
               '<td class="num">'+fmtNum(b.inodes_free)+'</td>';
     }
     html += '<tr><td><div>'+esc(b.name)+'</div>'+
@@ -803,6 +865,11 @@ def parse_args(argv):
         os.path.dirname(os.path.abspath(__file__)), "mergerfs_dash_cache.json")
     p.add_argument("--cache", default=default_cache,
                    help="location of the scan cache (default: next to this script)")
+    p.add_argument("--discover-root",
+                   default=os.environ.get("DISCOVERY_ROOT", "/branches"),
+                   help="where to look for mounted branches when nothing else "
+                        "is configured (default /branches; map your disk "
+                        "parent dir there in Docker)")
     return p.parse_args(argv)
 
 
@@ -840,7 +907,10 @@ def main(argv=None):
         if not branches:
             sys.exit(f"error: mergerfs on {args.mount} reported no branches.")
     else:
-        branches, mount = detect_from_proc_mounts()
+        try:
+            branches, mount = detect_from_proc_mounts()
+        except OSError:  # no /proc/mounts (e.g. macOS)
+            branches, mount = None, None
         if branches:
             print(f"auto-detected mergerfs mount at {mount}")
             try:
@@ -848,8 +918,16 @@ def main(argv=None):
             except OSError:
                 pass
         else:
-            sys.exit("error: no branches given and no mergerfs mount found.\n"
-                     "Use --mount /path/to/mergerfs or --branches a,b,c")
+            branches = discover_mounted_branches(args.discover_root)
+            if branches:
+                print(f"auto-discovered {len(branches)} mounted branch(es) "
+                      f"under {args.discover_root}")
+            else:
+                sys.exit(
+                    f"error: no branches configured, no mergerfs mount found, "
+                    f"and no mounted filesystems under '{args.discover_root}'.\n"
+                    f"Use --mount /path/to/mergerfs, --branches a,b,c, or map "
+                    f"your disks under {args.discover_root}.")
 
     branches = list(dict.fromkeys(branches))  # dedupe, keep order
     missing = [b for b in branches if not os.path.isdir(b)]
@@ -862,6 +940,12 @@ def main(argv=None):
 
     state = State(branches, args.cache, version=version)
     had_cache = state.load_cache()
+    if had_cache:
+        cache_note = "loaded, scanned " + time.ctime(state.scan_data["scanned_at"])
+    elif os.path.exists(args.cache):
+        cache_note = "branch layout changed — discarded, will rescan"
+    else:
+        cache_note = "none yet"
 
     print(f"mergerfs-dash v{APP_VERSION}")
     if version:
@@ -869,12 +953,11 @@ def main(argv=None):
     print(f"branches ({len(branches)}):")
     for name, path in zip(state.branch_names, branches):
         print(f"  {name}: {path}")
-    print(f"cache            : {args.cache} "
-          f"({'loaded, scanned ' + time.ctime(state.scan_data['scanned_at']) if had_cache else 'none yet'})")
+    print(f"cache            : {args.cache} ({cache_note})")
     print(f"listening on     : http://{args.host}:{args.port}")
 
     if not had_cache:
-        print("no cache found — starting initial background scan "
+        print("no usable cache — starting background scan "
               "(the page works immediately from live capacity data)")
         threading.Thread(target=run_scan, args=(state,), daemon=True).start()
 
