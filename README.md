@@ -4,6 +4,8 @@ A tiny, zero-dependency web dashboard that shows how your data is distributed
 across the branches of a [mergerfs](https://github.com/trapexit/mergerfs) pool.
 
 - Used/total/free per branch, plus a balance meter (fill-% spread)
+- "Next write goes to" panel — the branch your mergerfs create policy would
+  pick right now (reads the live policy from mergerfs in host mode)
 - Which branch each top-level share's bytes actually live on
 - Breakdown by file type (video / audio / images / docs / archives / other)
 - Largest files in the pool and per-branch file/dir/inode counts
@@ -138,6 +140,7 @@ A systemd unit example is in the header comment of `mergerfs_dash.py`.
 | Mount      | `--mount`     | `MOUNT`      | host mode: auto-detect branches via mergerfs xattr         |
 | Discovery  | `--discover-root` | `DISCOVERY_ROOT` | `/branches` — where mounted disks are found in zero-config mode |
 | Port       | `--port`      | `PORT`       | `8282`                                 |
+| Create policy | `--policy` | `CREATE_POLICY` | auto-read from mergerfs in host mode; in Docker it assumes `mfs` unless set |
 | Listen addr| `--host`      | `HOST`       | `0.0.0.0`                              |
 | Scan cache | `--cache`     | `CACHE_PATH` | next to the script / `/data/…` in Docker |
 

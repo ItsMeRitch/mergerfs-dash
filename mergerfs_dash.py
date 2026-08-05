@@ -44,6 +44,8 @@ Config can also come from environment variables (this is how Docker works):
     DISCOVERY_ROOT where to look for mounted branches when nothing else is
                    configured (default /branches)
     PORT           listen port              (default 8282)
+    CREATE_POLICY  mergerfs create policy for the "next write" panel (read
+                   from the mergerfs mount automatically in host mode)
     HOST           listen address           (default 0.0.0.0)
     CACHE_PATH     where to store scan JSON (default: alongside this script,
                    /data/mergerfs_dash_cache.json in the container)
@@ -75,7 +77,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 DEFAULT_PORT = 8282
 TOP_N_SHARES = 12        # rows in the "share distribution" chart
 TOP_N_LARGEST = 10       # rows in the "largest files" list
@@ -190,11 +192,14 @@ def branch_display_names(paths):
 # ---------------------------------------------------------------------------
 
 class State:
-    def __init__(self, branch_paths, cache_path, version=None):
+    def __init__(self, branch_paths, cache_path, version=None,
+                 create_policy=None, policy_assumed=True):
         self.branch_paths = branch_paths
         self.branch_names = branch_display_names(branch_paths)
         self.cache_path = cache_path
         self.version = version
+        self.create_policy = create_policy
+        self.policy_assumed = policy_assumed
         self.lock = threading.Lock()
         self.scanning = False
         self.scan_error = None
@@ -338,6 +343,53 @@ def statvfs_info(path):
     }
 
 
+def predict_next_write(branches, policy, assumed):
+    """Estimate which branch receives the next create, per mergerfs policy.
+
+    Only 'which branch wins' resolutions are modelled; mergerfs details like
+    minfreespace and existing-path filtering are intentionally ignored, so
+    this is a good-faith estimate for the common policies.
+    """
+    if policy:
+        policy = policy.lower()
+    else:
+        policy = "mfs"   # mergerfs' spirit-default family; flagged assumed
+    ok = [b for b in branches if b.get("ok") and b["total"] > 0]
+    if not ok:
+        return None
+
+    if policy in ("mfs", "epmfs"):
+        target = max(ok, key=lambda b: b["free"])
+        return {"mode": "branch", "policy": policy, "assumed": assumed,
+                "branch": target["name"], "free": target["free"],
+                "reason": "most free space"}
+    if policy == "lus":
+        target = min(ok, key=lambda b: b["used"])
+        return {"mode": "branch", "policy": policy, "assumed": assumed,
+                "branch": target["name"], "free": target["free"],
+                "reason": "least used space"}
+    if policy in ("lfs", "eplus"):
+        target = min(ok, key=lambda b: b["free"])
+        return {"mode": "branch", "policy": policy, "assumed": assumed,
+                "branch": target["name"], "free": target["free"],
+                "reason": "least free space"}
+    if policy in ("ff", "eoff", "pfrd"):
+        return {"mode": "branch", "policy": policy, "assumed": assumed,
+                "branch": ok[0]["name"], "free": ok[0]["free"],
+                "reason": "first eligible branch"}
+    if policy in ("rand", "erand"):
+        return {"mode": "text", "policy": policy, "assumed": assumed,
+                "text": "a randomly chosen branch"}
+    if policy in ("all", "eall"):
+        return {"mode": "text", "policy": policy, "assumed": assumed,
+                "text": "ALL branches (one copy each)"}
+    if policy in ("newest",):
+        return {"mode": "text", "policy": policy, "assumed": assumed,
+                "text": "the branch holding the newest parent dir"}
+    return {"mode": "text", "policy": policy, "assumed": assumed,
+            "text": f"policy-dependent ({policy})"}
+
+
 def build_stats(state):
     branches = []
     totals = {"total": 0, "free": 0}
@@ -358,7 +410,10 @@ def build_stats(state):
         "app_version": APP_VERSION,
         "mergerfs_version": state.version,
         "now": time.time(),
-        "pool": {"branches": branches, **totals},
+        "pool": {"branches": branches,
+                 "next_write": predict_next_write(branches, state.create_policy,
+                                                  state.policy_assumed),
+                 **totals},
         "scan": {
             "scanning": state.scanning,
             "files_seen": state.files_seen,
@@ -492,6 +547,11 @@ ol.largest .fp{color:var(--dim); font-size:11px; word-break:break-all}
     <div id="balance" class="marginrows"></div>
   </div>
 
+  <div class="panel">
+    <h2>Next write goes to</h2>
+    <div id="nextwrite"></div>
+  </div>
+
   <div class="panel wide">
     <h2>Where each share lives (scan data)</h2>
     <div id="shares"></div>
@@ -588,6 +648,7 @@ function render(s){
 
   renderDonut(pool);
   renderBalance(pool);
+  renderNextWrite(pool);
   renderBranchTable(s);
 
   const d = s.scan.data;
@@ -645,6 +706,29 @@ function renderBalance(pool){
       fillColor(pct)+'"></span></div></div>';
   });
   el.innerHTML = html;
+}
+
+function renderNextWrite(pool){
+  const el = document.getElementById("nextwrite");
+  const nw = pool.next_write;
+  if(!nw){ el.innerHTML = '<span class="muted">no data</span>'; return; }
+  let body;
+  if(nw.mode === "branch"){
+    const idx = pool.branches.findIndex(b => b.name === nw.branch);
+    const col = branchColor(Math.max(idx, 0));
+    body = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'+
+      '<span class="dot" style="background:'+col+';width:12px;height:12px"></span>'+
+      '<span style="font-size:20px;font-weight:700">'+esc(nw.branch)+'</span></div>'+
+      '<div class="muted small">'+esc(nw.reason)+' · '+fmtBytes(nw.free)+' free</div>';
+  } else {
+    body = '<div style="font-size:15px">'+esc(nw.text)+'</div>';
+  }
+  body += '<div class="muted small" style="margin-top:10px">policy: '+
+    '<span class="mono">'+esc(nw.policy)+'</span>'+
+    (nw.assumed ? ' <span class="warn">(assumed — set CREATE_POLICY to match your mergerfs config)</span>' : '')+
+    '<br>estimate only — mergerfs also applies minfreespace and '+
+    'existing-path rules</div>';
+  el.innerHTML = body;
 }
 
 function renderShares(d, pool){
@@ -870,6 +954,10 @@ def parse_args(argv):
                    help="where to look for mounted branches when nothing else "
                         "is configured (default /branches; map your disk "
                         "parent dir there in Docker)")
+    p.add_argument("--policy", default=os.environ.get("CREATE_POLICY"),
+                   help="mergerfs create policy (mfs, epmfs, lfs, ff, rand, "
+                        "...), used for the 'next write' panel; read from the "
+                        "mergerfs mount automatically in host mode")
     return p.parse_args(argv)
 
 
@@ -881,6 +969,7 @@ def main(argv=None):
     args = parse_args(argv if argv is not None else sys.argv[1:])
 
     version = None
+    mergerfs_mount = None
     if args.branches:
         # Entries may be shell-style globs (e.g. "/branches/disk*"), just
         # like in a mergerfs fstab. Expand them here.
@@ -898,6 +987,7 @@ def main(argv=None):
             else:
                 branches.append(raw)
     elif args.mount:
+        mergerfs_mount = args.mount
         try:
             branches, version = detect_from_xattr(args.mount)
         except OSError as exc:
@@ -912,6 +1002,7 @@ def main(argv=None):
         except OSError:  # no /proc/mounts (e.g. macOS)
             branches, mount = None, None
         if branches:
+            mergerfs_mount = mount
             print(f"auto-detected mergerfs mount at {mount}")
             try:
                 _, version = detect_from_xattr(mount)
@@ -938,7 +1029,21 @@ def main(argv=None):
     if not branches:
         sys.exit("error: no usable branches found.")
 
-    state = State(branches, args.cache, version=version)
+    # Create-policy resolution: explicit flag/env wins; otherwise read the
+    # live value from mergerfs (host mode only); else assume most-free-space.
+    create_policy = args.policy
+    policy_assumed = not bool(args.policy)
+    if not create_policy and mergerfs_mount:
+        try:
+            create_policy = os.getxattr(
+                mergerfs_mount, "user.mergerfs.create").decode().strip() or None
+            policy_assumed = create_policy is None
+        except OSError:
+            create_policy = None
+            policy_assumed = True
+
+    state = State(branches, args.cache, version=version,
+                  create_policy=create_policy, policy_assumed=policy_assumed)
     had_cache = state.load_cache()
     if had_cache:
         cache_note = "loaded, scanned " + time.ctime(state.scan_data["scanned_at"])
