@@ -77,7 +77,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.5"
 DEFAULT_PORT = 8282
 TOP_N_SHARES = 12        # rows in the "share distribution" chart
 TOP_N_LARGEST = 10       # rows in the "largest files" list
@@ -358,29 +358,38 @@ def predict_next_write(branches, policy, assumed):
     if not ok:
         return None
 
-    if policy in ("mfs", "epmfs"):
+    if policy in ("mfs", "epmfs", "mspmfs"):
         target = max(ok, key=lambda b: b["free"])
         return {"mode": "branch", "policy": policy, "assumed": assumed,
                 "branch": target["name"], "free": target["free"],
                 "reason": "most free space"}
-    if policy == "lus":
+    if policy in ("lus", "eplus", "msplus"):
         target = min(ok, key=lambda b: b["used"])
         return {"mode": "branch", "policy": policy, "assumed": assumed,
                 "branch": target["name"], "free": target["free"],
                 "reason": "least used space"}
-    if policy in ("lfs", "eplus"):
+    if policy in ("lfs", "eplfs", "msplfs"):
         target = min(ok, key=lambda b: b["free"])
         return {"mode": "branch", "policy": policy, "assumed": assumed,
                 "branch": target["name"], "free": target["free"],
                 "reason": "least free space"}
-    if policy in ("ff", "eoff", "pfrd"):
+    if policy in ("pfrd", "msppfrd"):
+        # PFRD = percentage-free random distribution: quasi-random, weighted
+        # toward branches with the most free space PERCENTAGE. Best single
+        # answer is the current favorite; it is a trend, not a guarantee.
+        target = max(ok, key=lambda b: b["free"] / b["total"])
+        return {"mode": "branch", "policy": policy, "assumed": assumed,
+                "branch": target["name"], "free": target["free"],
+                "reason": "random, weighted toward freer disks "
+                          "(this is the current favorite)"}
+    if policy in ("ff", "epff", "eoff"):
         return {"mode": "branch", "policy": policy, "assumed": assumed,
                 "branch": ok[0]["name"], "free": ok[0]["free"],
                 "reason": "first eligible branch"}
-    if policy in ("rand", "erand"):
+    if policy in ("rand", "eprand", "erand"):
         return {"mode": "text", "policy": policy, "assumed": assumed,
                 "text": "a randomly chosen branch"}
-    if policy in ("all", "eall"):
+    if policy in ("all", "eall", "epall"):
         return {"mode": "text", "policy": policy, "assumed": assumed,
                 "text": "ALL branches (one copy each)"}
     if policy in ("newest",):
